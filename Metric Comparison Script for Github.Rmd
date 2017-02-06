@@ -1,0 +1,836 @@
+---
+title: "Comparison of TIM Metrics"
+author: "Chris Terry"
+date: "6 February 2017"
+output:
+  html_document:
+     number_sections: yes
+     theme: cerulean
+     toc: yes
+---
+
+# Introduction
+
+This script runs the models detailed in [[]], calculates a number of TIM metrics and plots them.
+
+It  has not been particularly tidied, nor is it particularly efficient, but should be readable.
+
+Any questions to Chris Terry (james.terry@zoo.ox.ac.uk)
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+rm(list = ls())
+library(deSolve)
+library(magrittr)
+library(rootSolve)
+library(pracma)
+library(Matrix)
+library(dplyr)
+library(tidyr)
+library(Deriv)
+library(abind)
+library(ggplot2)
+library(cowplot)
+library(RColorBrewer)
+
+```
+
+# Linear Model
+Tri-trophic Lotka-volterra with logistic resource growth and linear TIM of resource modifying predator-herbivore link:
+
+```{r}
+BasicLinTIM<-function(Time=c(), Abund, Pars){  
+  with(as.list(c(Abund, Pars)),{  
+    dA<- B*A*(a+(c*C)) -  m*A  
+    dB<- B*C*b - B*A*(a+c*C) - n*B
+    dC<- r*C*(1-(C/K)) -  B*C*b
+    return(list(c(dA, dB, dC)))
+  })  
+}  
+
+BasicLinTIM_2<-function(Abund, Parms){  
+  with(as.list(c(Abund, Parms)),{
+    dA<- B*A*(a+(c*C)) -  m*A  
+    dB<- B*C*b - B*A*(a+c*C) - n*B
+    dC<- r*C*(1-(C/K)) -  B*C*b
+    return(c(dA, dB, dC))
+  })  
+}
+
+dAdt<-expression(  B*A*(a+(c*C)) -  m*A      )
+dBdt<-expression(  B*C*b - B*A*(a+c*C) - n*B    )
+dCdt<-expression(  r*C*(1-(C/K)) -  B*C*b    )
+
+{
+  # Elements of Jacobian Needed
+  cat(paste0('dAdt/dB = '))
+  dAdt_dB<-Deriv(dAdt, x = 'B', cache.exp = FALSE)
+  print(dAdt_dB)
+  
+  cat(paste0('dBdt/dA = '))
+  dBdt_dA<-Deriv(dBdt, x = 'A', cache.exp = FALSE)
+  print(dBdt_dA)
+  
+  cat(paste0('dAdt/dC = '))
+  dAdt_dC<-Deriv(dAdt, x = 'C', cache.exp = FALSE)
+  print(dAdt_dC)
+  
+  cat(paste0('dBdt/dC = '))
+  dBdt_dC<-Deriv(dBdt, x = 'C', cache.exp = FALSE)
+  print(dBdt_dC)
+  
+  # Derivatives of Jacobian w.r.t. Modifier
+  
+  cat(paste0('dAdt/dB/dC',' = '))
+  dAdt_dB_dC<-Deriv(dAdt_dB, x = 'C', cache.exp = FALSE)
+  print(dAdt_dB_dC)
+  
+  cat(paste0('dBdt/dA/dC ='))
+  dBdt_dA_dC<-Deriv(dBdt_dA , x = 'C', cache.exp = FALSE)
+  print(dBdt_dA_dC)
+}
+```
+
+```{r}
+pars<- list(a = 5, b = 3, r = 4, c = 0, m = 1, n = 1,  K = 1)
+param.list = seq(-5, 5, l=80)
+
+FUNC = BasicLinTIM_2
+FUNC2 = BasicLinTIM
+param = 'c'
+
+CijkForm = 'Lin'
+TITLE='\n TIM Strength Metrics for Linear System'
+max=1
+repeats=100
+
+
+# Function to plot TIMs, mu, and populations of trophic cascade system against chaning parameter.   
+# Takes C..dA.dB & C..dB.dA and pars from global environment. 
+
+ModFunc <- function(c,C){1+c*C}
+
+clist<- data.frame(param=param.list) # set of TIM parameters to run through
+clist$A<-NA
+clist$B<-NA
+clist$C<-NA
+clist$mu<-NA
+clist$dAdt_dB_dCJAC<-NA
+clist$dBdt_dA_dCJAC<-NA
+clist$dBdt_dC<-NA
+clist$dAdt_dC<-NA
+clist$NewISRatio<-NA
+clist$FluxAbsChange<-NA
+clist$FluxRelChange<-NA
+clist$dAdt_dB_dCInvJAC<- NA 
+clist$dBdt_dA_dCInvJAC <- NA
+
+
+# For finding New IS difference with TIM, calculate B equilbirum without TIM effect:
+pars2=pars
+pars2[['c']] <-0  # Cemove the TIM effect
+outs2<- matrix(NA, ncol=3, nrow=repeats)
+for(i in 1:repeats){
+  outs2[i,]<-multiroot(FUNC, c(A=runif(1,0.01,max), B=runif(1,0.01,max),C=runif(1,0.01,max)),parms=pars2, positive = T)$root
+}
+un<-unique(outs2); colnames(un)<- c('A','B','C');
+as.data.frame(un) %>% filter(A>0.0001) ->x # select positive equilbira
+if(nrow(x)>0){
+  HstarNoTIM =x$B[1]        # Just pick out one (NB if multiple equilibira may get problems here!)
+  FluxNoMod <- x$B[1]*x$A[1]*pars2$a
+}else{warning("Didn't find equilbirum")}
+
+
+
+for(j in 1:nrow(clist)){
+  pars[[param]] <- clist$param[j]  
+  # Find Positive Equilbirum: 
+  outs<- matrix(NA, ncol=3, nrow=repeats)
+  for(i in 1:repeats){
+    outs[i,]<-multiroot(FUNC, c(A=runif(1,0.01,max), B=runif(1,0.01,max),C=runif(1,0.01,max)),parms=pars, positive = T)$root
+  }
+  un<-unique(outs); colnames(un)<- c('A','B','C');
+  as.data.frame(un) %>% filter(A>0.0001) ->x # select positive equilbira
+  parsALL<- pars 
+  if(nrow(x)>0){
+    x %>% slice(1) ->x # Just pick out one (NB if multiple equilibira may get problems here!)
+    clist$A[j]<-parsALL$A<-x[[1]]
+    clist$B[j]<-parsALL$B<-x[[2]]
+    clist$C[j]<-parsALL$C<-x[[3]]
+    clist$mu[j] <- with(parsALL, ModFunc(c,C))
+    clist$NewISRatio[j]<- x[[2]] / HstarNoTIM
+    clist$NewISAbsDif ##!
+    clist$dAdt_dB_dCJAC[j]<-with(parsALL,  eval(dAdt_dB_dC)) # dAdt_dB_dC
+    clist$dBdt_dA_dCJAC[j]<-with(parsALL,  eval(dBdt_dA_dC)) # dBdt_dA_dC
+    
+    clist$dBdt_dC[j]<-with(parsALL,  eval(dBdt_dC))
+    clist$dAdt_dC[j]<-with(parsALL,  eval(dAdt_dC))
+    
+    clist$FluxAbsChange[j] <- with(parsALL,  B*A*(a+c*C))- FluxNoMod
+    clist$FluxRelChange[j] <- with(parsALL,  B*A*(a+c*C))/FluxNoMod
+    
+    x %>%slice(1) %>% as.numeric ->Eq
+    
+    abind(  # Create full 3-d array of derivatives of inverse jacobians
+      matrix(rootSolve::gradient(function(x){
+        jac<-jacobian.full(c(A=x, B=Eq[2], C=Eq[3]),FUNC2, parms=pars, pert=1e-6) # Increased perturbation necessary to reduce numerical errors
+        inv(-jac)}, Eq[1]),nrow=3),
+      matrix(rootSolve::gradient(function(x){
+        jac<-jacobian.full(c(A=Eq[1], B=x, C=Eq[3]),FUNC2, parms=pars, pert=1e-6)
+        inv(-jac)}, Eq[2]),nrow=3),
+      matrix(rootSolve::gradient(function(x){
+        jac<-jacobian.full(c(A=Eq[1], B=Eq[2], C=x),FUNC2, parms=pars, pert=1e-6)
+        inv(-jac)}, Eq[3]),nrow=3),
+      along=3)->y
+    
+    clist$dAdt_dB_dCInvJAC[j]<-y[1,2,3] #dAdt_dB_dC # pluck out the ones that are wanted
+    clist$dBdt_dA_dCInvJAC[j]<-y[2,1,3] #dBdt_dA_dC
+    
+  }
+}
+
+names(clist)[1]<-param # Insert name of TIM parameter for plots
+
+par(mfrow=c(5,3), mar=c(3,4,2,1), xpd=NA, oma=c(1,3,3,1), mgp=c(2, 1, 0), cex.main=1.8)
+
+clist<-signif(clist, 6)
+
+cats<-data.frame(Metric=c("A",                  
+                          "B",            
+                          "C",            
+                          "mu",            
+                          "dAdt_dB_dCJAC",   
+                          "dBdt_dA_dCJAC",
+                          "dBdt_dC",  
+                          "dAdt_dC",  
+                          "NewISRatio", 
+                          "FluxAbsChange", 
+                          "FluxRelChange" ,
+                          "dAdt_dB_dCInvJAC",
+                          "dBdt_dA_dCInvJAC"),metricCategory=
+                   c('Population',
+                     'Population'    ,
+                     'Population'    ,
+                     'Flux Change',
+                     'Derivatives of Jacobian',
+                     'Derivatives of Jacobian',
+                     'Jacobian Elements',
+                     'Jacobian Elements',
+                     'Flux Change' ,
+                     'Flux Change',
+                     'Flux Change',
+                     'Derivatives of Inverse Jacobian',
+                     'Derivatives of Inverse Jacobian'),
+                 Direction=
+                   c('Neither',
+                     'Neither'    ,
+                     'Neither'    ,
+                     'Neither',
+                     'B on A',
+                     'A on B',
+                     'B change',
+                     'A Change',
+                     'Neither' ,
+                     'Neither',
+                     'Neither',
+                     'B on A',
+                     'A on B'))
+#  mutate(Scaled = Value /scalers ) %>%
+
+# clist %>% tbl_df %>%print
+# 
+# clist %>% 
+#   #   select(-c(A,B,C))%>%
+#   gather('Metric','Value', 2:14) %>% 
+#   left_join( cats, by='Metric' ) %>%
+#   arrange(Metric) %>%print
+# 
+
+
+clist %>% 
+  #   select(-c(A,B,C))%>%
+  gather('Metric','Value', 2:14) %>% 
+  left_join( cats, by='Metric' ) %>%
+  arrange(Metric) -> LINEARDATA
+
+
+LINEARDATA %>%      
+  mutate(absValues =abs(Value))%>%
+  ggplot(aes(y=absValues, x=c, col=Metric, shape= Direction)) +
+  geom_point() +
+  geom_line() +
+  #   scale_color_brewer(palette = 'Paired') +
+  facet_grid(metricCategory~., scales = 'free_y') ->plot1
+
+```
+
+
+## Non-linear functional response Model
+
+Tri-trophic Rozenweing MacArthur with exponential TIM of resource modifying predator-herbivore link:
+
+
+```{r, echo=FALSE}
+
+TyIIExp<-function(Time=c(), Abund, Pars){  
+  with(as.list(c(Abund, Pars)),{  
+    dA<- B*A*a*exp(c*C)/ (1+B*h*a*exp(c*C)) -  m*A  
+    dB<- B*C*b/(1+C*b*h) - B*A*a*exp(c*C)/(1+B*h*a*exp(c*C)) - n*B
+    dC<- r*C*(1-(C/K)) -  B*C*b / (1+C*b*h)  
+    return(list(c(dA, dB, dC)))
+  })  
+}  
+
+TyIIExp_2<-function(Abund, Parms){  
+  with(as.list(c(Abund, Parms)),{
+    dA<- B*A*a*exp(c*C)/ (1+B*h*a*exp(c*C)) -  m*A  
+    dB<- B*C*b/(1+C*b*h) - B*A*a*exp(c*C)/(1+B*h*a*exp(c*C)) - n*B
+    dC<- r*C*(1-(C/K)) -  B*C*b / (1+C*b*h)  
+    return(c(dA, dB, dC))
+  })  
+}
+####
+
+
+dAdt<-expression(  B*A*a*exp(c*C)/ (1+B*h*a*exp(c*C)) -  m*A       )
+dBdt<-expression(  B*C*b/(1+C*b*h) - B*A*a*exp(c*C)/(1+B*h*a*exp(c*C)) - n*B   )
+dCdt<-expression(  r*C*(1-(C/K)) -  B*C*b / (1+C*b*h)    )
+
+{
+  # Elements of Jacobian Needed
+  cat(paste0('dAdt/dB = '))
+  dAdt_dB<-Deriv(dAdt, x = 'B', cache.exp = FALSE)
+  print(dAdt_dB)
+  
+  cat(paste0('dBdt/dA = '))
+  dBdt_dA<-Deriv(dBdt, x = 'A', cache.exp = FALSE)
+  print(dBdt_dA)
+  
+  cat(paste0('dAdt/dC = '))
+  dAdt_dC<-Deriv(dAdt, x = 'C', cache.exp = FALSE)
+  print(dAdt_dC)
+  
+  cat(paste0('dBdt/dC = '))
+  dBdt_dC<-Deriv(dBdt, x = 'C', cache.exp = FALSE)
+  print(dBdt_dC)
+  
+  # Derivatives of Jacobian w.r.t. Modifier
+  
+  cat(paste0('dAdt/dB/dC',' = '))
+  dAdt_dB_dC<-Deriv(dAdt_dB, x = 'C', cache.exp = FALSE)
+  print(dAdt_dB_dC)
+  
+  cat(paste0('dBdt/dA/dC ='))
+  dBdt_dA_dC<-Deriv(dBdt_dA , x = 'C', cache.exp = FALSE)
+  print(dBdt_dA_dC)
+}
+```
+
+
+```{r}
+
+#pars<- list(a = 6, b = 5, r = 2, c = 0, m = 1,n = 1,h= 0.1,K = 1)
+
+pars<- list(a = 6, b = 5, r = 2, c = 0, m = 1,n = 1,h= 0.4,K = 1)
+
+FUNC=TyIIExp_2
+FUNC2=TyIIExp 
+param='c'
+param.list=seq(-1, 1.5, l=80)
+CijkForm='Exp'
+TITLE='\n TIM Strength Metrics for Non-linear System'
+max=1
+repeats=100
+
+# Function to plot TIMs, mu, and populations of trophic cascade system against chaning parameter.   
+# Takes C..dA.dB & C..dB.dA and pars from global environment. 
+
+ModFunc <- function(c,C){exp(c*C)}
+
+clist<- data.frame(param=param.list) # set of TIM parameters to run through
+clist$A<-NA
+clist$B<-NA
+clist$C<-NA
+clist$mu<-NA
+clist$dAdt_dB_dCJAC<-NA
+clist$dBdt_dA_dCJAC<-NA
+clist$dBdt_dC<-NA
+clist$dAdt_dC<-NA
+clist$NewISRatio<-NA
+clist$FluxAbsChange<-NA
+clist$FluxRelChange<-NA
+clist$dAdt_dB_dCInvJAC<- NA 
+clist$dBdt_dA_dCInvJAC <- NA
+
+
+# For finding New IS difference with TIM, calculate B equilbirum without TIM effect:
+pars2=pars
+pars2[['c']] <-0  # Remove the TIM effect
+outs2<- matrix(NA, ncol=3, nrow=repeats)
+for(i in 1:repeats){
+  outs2[i,]<-multiroot(FUNC, c(A=runif(1,0.01,max), B=runif(1,0.01,max),C=runif(1,0.01,max)),parms=pars2, positive = T)$root
+}
+un<-unique(outs2); colnames(un)<- c('A','B','C');
+as.data.frame(un) %>% filter(A>0.0001) ->x # select positive equilbira
+if(nrow(x)>0){
+  BstarNoTIM =x$B[1]        # Just pick out one (NB if multiple equilibira may get problems here!)
+  if(CijkForm=='Exp') FluxNoMod<-  x$B[1]*x$A[1]*pars2$a/(1+x$B[1]*pars2$h*pars2$a)# Calculate flux without mods
+  if(CijkForm=='Lin') FluxNoMod <- x$B[1]*x$A[1]*pars2$a
+}else{warning("Didn't find equilbirum")}
+
+for(j in 1:nrow(clist)){
+  pars[[param]] <- clist$param[j]  
+  # Find Aositive Equilbirum: 
+  outs<- matrix(NA, ncol=3, nrow=repeats)
+  for(i in 1:repeats){
+    outs[i,]<-multiroot(FUNC, c(A=runif(1,0.01,max), B=runif(1,0.01,max),C=runif(1,0.01,max)),parms=pars, positive = T)$root
+  }
+  un<-unique(outs); colnames(un)<- c('A','B','C');
+  as.data.frame(un) %>% filter(A>0.0001) ->x # select positive equilbira
+  parsALL<- pars 
+  if(nrow(x)>0){
+    x %>% slice(1) ->x # Just pick out one (NB if multiple equilibira may get problems here!)
+    clist$A[j]<-parsALL$A<-x[[1]]
+    clist$B[j]<-parsALL$B<-x[[2]]
+    clist$C[j]<-parsALL$C<-x[[3]]
+    clist$mu[j] <- with(parsALL, ModFunc(c,C))
+    clist$NewISRatio[j]<- x[[2]] / BstarNoTIM
+    clist$NewISAbsDif ##!
+    clist$dAdt_dB_dCJAC[j]<-with(parsALL,  eval(dAdt_dB_dC)) # dAdt_dB_dC
+    clist$dBdt_dA_dCJAC[j]<-with(parsALL,  eval(dBdt_dA_dC)) # dBdt_dA_dC
+    
+    clist$dBdt_dC[j]<-with(parsALL,  eval(dBdt_dC))
+    clist$dAdt_dC[j]<-with(parsALL,  eval(dAdt_dC))
+    
+    clist$FluxAbsChange[j] <-with(parsALL, B*A*a*exp(c*C)/(1+B*h*a*exp(c*C)))- FluxNoMod
+    clist$FluxRelChange[j] <-with(parsALL, B*A*a*exp(c*C)/(1+B*h*a*exp(c*C)))/FluxNoMod
+    
+    
+    x %>%slice(1) %>% as.numeric ->Eq
+    
+    abind(  # Create full 3-d array of derivatives of inverse jacobians
+      matrix(rootSolve::gradient(function(x){
+        jac<-jacobian.full(c(A=x, B=Eq[2], C=Eq[3]),FUNC2, parms=pars, pert=1e-6) # Increased perturbation necessary to reduce numerical errors
+        inv(-jac)}, Eq[1]),nrow=3),
+      matrix(rootSolve::gradient(function(x){
+        jac<-jacobian.full(c(A=Eq[1], B=x, C=Eq[3]),FUNC2, parms=pars, pert=1e-6)
+        inv(-jac)}, Eq[2]),nrow=3),
+      matrix(rootSolve::gradient(function(x){
+        jac<-jacobian.full(c(A=Eq[1], B=Eq[2], C=x),FUNC2, parms=pars, pert=1e-6)
+        inv(-jac)}, Eq[3]),nrow=3),
+      along=3)->y
+    
+    clist$dAdt_dB_dCInvJAC[j]<-y[1,2,3] #dAdt_dB_dC # Aluck out the ones that are wanted
+    clist$dBdt_dA_dCInvJAC[j]<-y[2,1,3] #dBdt_dA_dC
+    
+  }
+}
+
+names(clist)[1]<-param # Insert name of TIM parameter for plots
+
+
+clist %>% 
+  #   select(-c(A,B,C))%>%
+  gather('Metric','Value', 2:14) %>% 
+  left_join( cats, by='Metric' ) %>%
+  arrange(Metric) -> NONLINEARDATA
+
+
+NONLINEARDATA%>%
+  mutate(absValues =abs(Value))%>%
+  ggplot(aes(y=Value, x=c, col=Metric, shape= Direction)) +
+  geom_point() +
+  geom_line() +
+  #   scale_color_brewer(palette = 'Paired') +
+  facet_grid(metricCategory~., scales = 'free_y') -> plot1
+```
+
+
+
+#  Van Veen 
+
+Uses model and fitted values from van Veen et al. 
+
+van Veen, F. J. F., van Holland, P. D. & Godfray, H. C. J. Stable Coexistence in Insect Communities Due to Density- and Trait-Mediated Indirect Effects. Ecology 86, 3182-3189 (2005).
+
+
+```{r}
+Origvv<-function(Time=c(), State, Pars){  
+  with(as.list(c(State, Pars)),{  
+    dB <-  B*rB*(1- a*B - a12*C) - (aA*B*A)/(1+b*B+w*C)
+    dC <-  C*rC*(1- a*C - a21*B)  
+    dA <-  (s*aA*B*A)/(1+b*B +d*A+w*C) - A*m
+    return(list(c(dB, dC,dA)))
+  })
+}
+
+pars<- OrigPars<-list(
+  a  =0.000382,
+  a12=0.00037,
+  a21=0.000397,
+  rB =3.22,
+  rC =2.82,
+  aA =0.281,
+  s  =0.5,
+  d  =1.26,
+  b  =0.0233,
+  m  =0.634,
+  w=0.0434
+)
+
+```
+
+```{r echo=FALSE}
+dBdt <-  expression(B*rB*(1- a*B - a12*C) - (aA*B*A)/(1+b*B+w*C) )
+dCdt <-  expression(C*rC*(1- a*C - a21*B)     )       
+dAdt <-  expression((s*aA*B*A)/(1+b*B +d*A+w*C) - A*m)
+
+
+{
+  # Elements of Jacobian Needed
+  cat(paste0('dAdt/dB = '))
+  dAdt_dB<-Deriv(dAdt, x = 'B', cache.exp = FALSE)
+  print(dAdt_dB)
+  
+  cat(paste0('dBdt/dA = '))
+  dBdt_dA<-Deriv(dBdt, x = 'A', cache.exp = FALSE)
+  print(dBdt_dA)
+  
+  
+  cat(paste0('dBdt/dC = '))
+  dBdt_dC<-Deriv(dBdt, x = 'C', cache.exp = FALSE)
+  print(dBdt_dC)
+  
+  cat(paste0('dAdt/dC = '))
+  dAdt_dC<-Deriv(dAdt, x = 'C', cache.exp = FALSE)
+  print(dAdt_dC)
+  
+  # Derivatives of Jacobian w.r.t. Modifier
+  
+  cat(paste0('dAdt/dB/dC',' = '))
+  dAdt_dB_dC<-Deriv(dAdt_dB, x = 'C', cache.exp = FALSE)
+  print(dAdt_dB_dC)
+  
+  cat(paste0('dBdt/dA/dC ='))
+  dBdt_dA_dC<-Deriv(dBdt_dA , x = 'C', cache.exp = FALSE)
+  print(dBdt_dA_dC)
+}
+
+```
+
+```{r, echo=FALSE}
+
+param.list= c(seq(0, 0.02, l=40), seq(0.02, 0.08,l=60))
+
+param='w'
+repeats=200
+
+FUNC=Origvv
+
+FUNC2<-function(Abund, Parms){  
+  with(as.list(c(Abund, Parms)),{
+    dB <-  B*rB*(1- a*B - a12*C) - (aA*B*A)/(1+b*B+w*C)
+    dC <-  C*rC*(1- a*C - a21*B)  
+    dA <-  (s*aA*B*A)/(1+b*B +d*A+w*C) - A*m
+    return(c(dB, dC,dA))
+  })  
+}
+
+clist<- data.frame(param=param.list, # set of TIM parameters to run through
+                   B=NA,C=NA, A=NA,
+                   mu=NA,  
+                   dAdt_dB_dCJAC=NA,dBdt_dA_dCJAC=NA,
+                   dBdt_dC=NA, dAdt_dC=NA,
+                   NewISRatio=NA,
+                   FluxAbsChange=NA, FluxRelChange=NA,
+                   dAdt_dB_dCInvJAC= NA , dBdt_dA_dCInvJAC = NA)
+
+# For finding New IS difference with TIM, calculate B equilbirum without TIM effect:
+pars2=pars
+pars2[['w']] <-0  # Remove the TIM effect
+outs2<- matrix(NA, ncol=3, nrow=repeats)
+for(i in 1:repeats){
+  outs2[i,]<-multiroot(FUNC2, c(B=runif(1,10,2000), C=runif(1,1000,2100),A=runif(1,35,100)),parms=pars2, positive = T)$root
+}
+un<-unique(outs2); colnames(un)<- c('B','C','A');
+as.data.frame(un) %>% filter(A>0.0001) ->x # select positive equilbira
+if(nrow(x)>0){
+  x%>%slice(1) ->x # Just pick out one (NB if multiple equilibira may get problems here!)
+  BstarNoTIM =x$B      
+  FluxNoMod <-  with( pars2, (aA*x$B*x$A)/(1+b*x$B+w*x$C)   )   
+}else{warning("Didn't find equilbirum")}
+
+for(j in 1:nrow(clist)){
+  pars[[param]] <- clist$param[j]  
+  # Find Aositive Equilbirum: 
+  outs<- matrix(NA, ncol=3, nrow=repeats)
+  for(i in 1:repeats){
+    outs[i,]<-multiroot(FUNC2, c(B=runif(1,10,2000), C=runif(1,1000,2100),A=runif(1,35,100)),parms=pars, positive = T)$root
+  }
+  un<-unique(outs); colnames(un)<- c('B','C','A');
+  as.data.frame(un) %>% filter(A>0.0001 & C>0.0001) ->x # select positive equilbira
+  parsALL<- pars 
+  if(nrow(x)>0){
+    x %>% slice(1) ->x # Just pick out one (NB if multiple equilibira may get problems here!)
+    clist$B[j]<-parsALL$B<-x[[1]]
+    clist$C[j]<-parsALL$C<-x[[2]]
+    clist$A[j]<-parsALL$A<-x[[3]]
+    clist$mu[j] <- with(parsALL,  -w * C )
+    clist$NewISRatio[j]<- x[[1]] / BstarNoTIM
+    clist$dAdt_dB_dCJAC[j]<-with(parsALL,  eval(dAdt_dB_dC)) # dAdt_dB_dC
+    clist$dBdt_dA_dCJAC[j]<-with(parsALL,  eval(dBdt_dA_dC)) # dBdt_dA_dC
+    clist$dBdt_dC[j]<-with(parsALL,  eval(dBdt_dC))
+    clist$dAdt_dC[j]<-with(parsALL,  eval(dAdt_dC))
+    clist$FluxAbsChange[j] <- with(parsALL,  (aA*B*A)/(1+b*B+w*C))  - FluxNoMod  ##!
+    clist$FluxRelChange[j] <- with(parsALL,  (aA*B*A)/(1+b*B+w*C))/FluxNoMod    ##!!
+    
+    x %>% as.numeric ->Eq
+    
+    y<- matrix(rootSolve::gradient(function(x){
+      jac<- jacobian.full(c(B=Eq[1], C=x, A=Eq[3]),FUNC, parms=pars, pert=1e-6)
+      inv(-jac)}, Eq[2]),nrow=3)
+    
+    clist$dAdt_dB_dCInvJAC[j]<-y[3,1] 
+    clist$dBdt_dA_dCInvJAC[j]<-y[1,3]
+  }else{warning("Didn't find equilbirum")}
+}
+
+```
+
+
+# Plotting all together
+
+```{r, echo=FALSE}
+NumReps = length(param.list)
+
+require(ggplot2)
+
+# Rescale 
+clist %>%
+  select(-c(B,C,A))%>%
+  gather('Metric','Value', 2:11)  %>%
+  group_by(Metric)%>%
+  summarise(Scalor = max(abs(Value))) %>% 
+  select(Scalor)%>%
+  unlist %>%
+  as.numeric %>%
+  rep(each=NumReps) -> scalers
+
+
+##need to make sure equations incoroprate this! Especially Mu!!
+
+
+colnames(clist)
+
+cats<-data.frame(Metric=c("B",                 
+                          "C",            
+                          "A",            
+                          "mu",            
+                          "dAdt_dB_dCJAC",   
+                          "dBdt_dA_dCJAC",
+                          "dBdt_dC",  
+                          "dAdt_dC",  
+                          "NewISRatio", 
+                          "FluxAbsChange", 
+                          "FluxRelChange" ,
+                          "dAdt_dB_dCInvJAC",
+                          "dBdt_dA_dCInvJAC"),metricCategory=
+                   c('Population',
+                     'Population'    ,
+                     'Population'    ,
+                     'Flux Change',
+                     'Derivatives of Jacobian',
+                     'Derivatives of Jacobian',
+                     'Jacobian Elements',
+                     'Jacobian Elements',
+                     'Flux Change' ,
+                     'Flux Change',
+                     'Flux Change',
+                     'Derivatives of Inverse Jacobian',
+                     'Derivatives of Inverse Jacobian'),
+                 Direction=
+                   c('Neither',
+                     'Neither'    ,
+                     'Neither'    ,
+                     'Neither',
+                     'B on A',
+                     'A on B',
+                     'B change',
+                     'A Change',
+                     'Neither' ,
+                     'Neither',
+                     'Neither',
+                     'B on A',
+                     'A on B'))
+#  mutate(Scaled = Value /scalers ) %>%
+
+clist %>% 
+  gather('Metric','Value', 2:14) %>% 
+  left_join( cats, by='Metric' ) %>%
+  arrange(Metric) -> VVDATA
+
+# VVDATA %>%
+#   mutate(absValues =abs(Value))%>%
+#   ggplot(aes(y=absValues, x=param, col=Metric, shape= Direction)) +
+#   geom_point() +
+#   geom_line() +
+#   scale_color_brewer(palette = 'Paired') +
+#   facet_grid(metricCategory~., scales = 'free_y')
+
+
+```
+
+
+```{r}
+
+bind_rows(LINEARDATA %>% rename(param=c)%>% mutate(Data='Linear'),
+          NONLINEARDATA %>% rename(param=c)%>% mutate(Data='Non-Linear'), 
+          VVDATA%>% mutate(Data='VV')
+) -> all
+
+
+all$Population<-'A'
+all$Population[all$Metric =='B'] <- 'B'
+all$Population[all$Metric =='C'] <- 'C'
+#all$Population<-as.factor(all$LineType)
+
+# order facets to same as table
+all$metricCategory <- factor(all$metricCategory, levels=c( "Population", "Flux Change",
+   "Jacobian Elements" ,"Derivatives of Jacobian" ,
+   "Derivatives of Inverse Jacobian" ))
+
+
+facet_names <- c(`Population` = 'Equilibrium\nPopulations',
+                 `Flux Change`=  'Direct Metrics',
+                 `Jacobian Elements`=  'Jacobian\nElements',
+                 `Derivatives of Jacobian`=  'Derivatives\nof Jacobian',
+                 `Derivatives of Inverse Jacobian` = 'Derivatives of\nInverse Jacobian',
+                  `VV`='Aphid-Parasitoid\n(van Veen et al 2005)'
+                 )
+
+b<-c(brewer.pal(10, 'Paired'), 'black')
+
+# Set up colours,
+colourset<- c('dBdt_dA_dCInvJAC' = b[1],
+             'dBdt_dA_dCJAC'  = b[3],
+             'dBdt_dC' = b[5],
+             'dAdt_dB_dCInvJAC' =  b[2],
+             'dAdt_dB_dCJAC' =b[4],
+             'dAdt_dC' = b[6],
+             'FluxAbsChange'= b[7],
+             'FluxRelChange'= b[8],
+             'B' =b[11],
+             'mu'= b[9],
+             'NewISRatio' = b[10],
+             'A' =b[11],
+             'C' =b[11])
+
+#all %>% filter( Data=='VV' & metricCategory=='Flux Change')
+
+# Colour changer                                
+Nice = 'black'
+
+all %>%
+  filter(Data=='Linear')%>%
+ ggplot(aes(y=Value, x=param, colour=Metric, linetype = Population)) +
+  ylab('                                         Metric Values                                           Densities')+
+  xlab('TIM Parameter')+
+  geom_line(size=1) +
+  scale_colour_manual(values = colourset)+
+  facet_grid(metricCategory~Data, scales = 'free')+
+  theme(legend.position = "none", strip.text.y = element_blank(),text= element_text(colour=Nice),
+        line=element_line(colour=Nice),
+        axis.text=element_text(colour=Nice),
+        axis.line.x=element_line(colour=Nice),
+        strip.background=element_rect(fill ='white' ),
+        axis.line.y=element_line(colour=Nice),
+        axis.ticks.x=element_line(colour=Nice),
+        axis.ticks.y=element_line(colour=Nice))-> A 
+
+all %>%
+  filter(Data=='Non-Linear')%>%
+ ggplot(aes(y=Value, x=param, colour=Metric, linetype = Population)) +
+  ylab('')+ xlab('TIM Parameter')+
+    scale_colour_manual(values = colourset)+
+  geom_line(size=1) +
+  facet_grid(metricCategory~Data, scales = 'free')+
+  theme(legend.position = "none",
+        strip.text.y = element_blank(),
+        text= element_text(colour=Nice),
+        strip.background=element_rect(fill ='white' ),
+        line=element_line(colour=Nice),
+        axis.text=element_text(colour=Nice),
+        axis.line.x=element_line(colour=Nice),
+        axis.line.y=element_line(colour=Nice),
+        axis.ticks.x=element_line(colour=Nice),
+        axis.ticks.y=element_line(colour=Nice)) -> B
+
+
+labels=c(expression(mu),
+         'Absolute\nFlux Change',
+         'Relative\nFlux Change',
+         'New IS Ratio\nChange',
+         expression(J[AC]),
+         expression(J[BC]), 
+         expression(frac(delta~{J}[AB],delta~C)),
+         expression(frac(delta~{J}[BA],delta~C)),
+         expression(frac(delta~{-J^-1}[AB],delta~C)),
+         expression(frac(delta~{-J^-1}[BA],delta~C)))  
+
+all %>%
+  filter(Data=='VV' & Metric != 'FluxAbsChange') ->vvDATA2 
+
+# log aphid and wasps populations
+vvDATA2$Value[vvDATA2$metricCategory=='Population']<-log(vvDATA2$Value[vvDATA2$metricCategory=='Population'] )
+
+vvDATA2$Metric <- factor(vvDATA2$Metric, levels=c( 'A','B','C',
+                                                   'mu','FluxAbsChange','FluxRelChange','NewISRatio',
+                                                   'dAdt_dC', 'dBdt_dC',
+                                                   'dAdt_dB_dCJAC','dBdt_dA_dCJAC',
+                                                   'dAdt_dB_dCInvJAC','dBdt_dA_dCInvJAC'))
+vvDATA2%>%
+  ggplot(aes(y=Value, x=param, col= Metric, linetype = Population))+
+  ylab('')+xlab('TIM Parameter')+
+  geom_line(size=1) +
+  scale_y_continuous(labels=function(n){format(n, scientific = FALSE)})+
+  scale_colour_manual(values = colourset,
+                      breaks= c(  'mu','FluxAbsChange','FluxRelChange','NewISRatio',
+                                  'dAdt_dC', 'dBdt_dC',
+                                  'dAdt_dB_dCJAC','dBdt_dA_dCJAC',
+                                  'dAdt_dB_dCInvJAC','dBdt_dA_dCInvJAC') ,
+                      labels=labels, drop=FALSE)+
+  scale_linetype_discrete(breaks= c('A','B','C'))+
+  theme(text= element_text(colour=Nice),
+        line=element_line(colour=Nice),
+        axis.text=element_text(colour=Nice),
+        strip.background=element_rect(fill ='white' ),
+        axis.line.x=element_line(colour=Nice),
+        axis.line.y=element_line(colour=Nice),
+        axis.ticks.x=element_line(colour=Nice),
+        axis.ticks.y=element_line(colour=Nice),
+        legend.text.align = 0,
+        legend.key = element_rect(colour = Nice),
+        legend.key.height=unit(2.5,"line")
+        
+  )+
+ guides(colour=guide_legend(order=2),
+        linetype=guide_legend(order=1,override.aes = list(colour = 'black')))+
+  facet_grid(metricCategory~Data, scales = 'free',labeller = as_labeller(facet_names)) -> C#
+
+```
+
+```{r, fig.height=8, fig.width=12, message=FALSE, warning=FALSE}
+
+plot_grid(A, B, C,  labels = c("", "", ""), align = "h", nrow = 1, rel_widths = c(1.5,1.5,2.5)) 
+
+plot_grid(A, B, C,  labels = c("", "", ""), align = "h", nrow = 1, rel_widths = c(1.5,1.5,2.5)) %>%
+    ggsave('MetricComparison.pdf',., width = 12, height=8,bg="white", dpi = 400)
+
+```
+
+
+
+
+
+
+
+
