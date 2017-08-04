@@ -11,9 +11,9 @@ output:
 
 # Introduction
 
-This script runs the models detailed in [[]], calculates a number of TIM metrics and plots them.
+This script runs the models detailed in Terry et al 2017, Ecology Letters, calculates a number of TIM metrics and plots them.
 
-It  has not been particularly tidied, nor is it particularly efficient, but should be readable.
+It has not been particularly tidied, nor is it particularly efficient, but should be readable.
 
 Any questions to Chris Terry (james.terry@zoo.ox.ac.uk)
 
@@ -234,17 +234,6 @@ cats<-data.frame(Metric=c("A",
                      'Neither',
                      'B on A',
                      'A on B'))
-#  mutate(Scaled = Value /scalers ) %>%
-
-# clist %>% tbl_df %>%print
-# 
-# clist %>% 
-#   #   select(-c(A,B,C))%>%
-#   gather('Metric','Value', 2:14) %>% 
-#   left_join( cats, by='Metric' ) %>%
-#   arrange(Metric) %>%print
-# 
-
 
 clist %>% 
   #   select(-c(A,B,C))%>%
@@ -267,7 +256,6 @@ LINEARDATA %>%
 ## Non-linear functional response Model
 
 Tri-trophic Rozenweing MacArthur with exponential TIM of resource modifying predator-herbivore link:
-
 
 ```{r, echo=FALSE}
 
@@ -327,9 +315,6 @@ dCdt<-expression(  r*C*(1-(C/K)) -  B*C*b / (1+C*b*h)    )
 
 
 ```{r}
-
-#pars<- list(a = 6, b = 5, r = 2, c = 0, m = 1,n = 1,h= 0.1,K = 1)
-
 pars<- list(a = 6, b = 5, r = 2, c = 0, m = 1,n = 1,h= 0.4,K = 1)
 
 FUNC=TyIIExp_2
@@ -444,11 +429,9 @@ NONLINEARDATA%>%
   facet_grid(metricCategory~., scales = 'free_y') -> plot1
 ```
 
-
-
 #  Van Veen 
 
-Uses model and fitted values from van Veen et al. 
+Uses model and fitted values from van Veen et al. 2005 
 
 van Veen, F. J. F., van Holland, P. D. & Godfray, H. C. J. Stable Coexistence in Insect Communities Due to Density- and Trait-Mediated Indirect Effects. Ecology 86, 3182-3189 (2005).
 
@@ -479,7 +462,7 @@ pars<- OrigPars<-list(
 
 ```
 
-```{r echo=FALSE}
+```{r}
 dBdt <-  expression(B*rB*(1- a*B - a12*C) - (aA*B*A)/(1+b*B+w*C) )
 dCdt <-  expression(C*rC*(1- a*C - a21*B)     )       
 dAdt <-  expression((s*aA*B*A)/(1+b*B +d*A+w*C) - A*m)
@@ -517,7 +500,7 @@ dAdt <-  expression((s*aA*B*A)/(1+b*B +d*A+w*C) - A*m)
 
 ```
 
-```{r, echo=FALSE}
+```{r}
 
 param.list= c(seq(0, 0.02, l=40), seq(0.02, 0.08,l=60))
 
